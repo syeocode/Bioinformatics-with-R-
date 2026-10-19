@@ -1,0 +1,394 @@
+---
+title: "Clustering and UMAP using scRNA-seq data for larvae"
+output:
+  html_document:
+    df_print: paged
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(1)
+```
+
+
+# Load data
+
+Load the larval data from Pandey et al. (2018). 
+```{r}
+
+library("data.table")
+
+
+read_scs = function(file){
+  dt = fread(file)
+  dtmt = as.matrix(dt[, -1])
+rownames(dtmt) = dt[, V1]
+colnames(dtmt) = colnames(dt)[-1]
+return(dtmt)
+  
+}
+
+create_scs = function(counts,metadata=NULL){
+  # Create list and name list elements 
+  list_out <- vector(mode = "list", length = 3)
+  names(list_out) <- c("counts", "initial_dim", "metadata")
+  
+  # counts data 
+  list_out$counts <- counts
+  
+  #  `initial_dim`: a vector containing the initial number of genes and cells contained in the raw counts data file; let the names of the vectors indicate which component contains genes and which contains cells
+  dimdata <- dim(counts)
+  names(dimdata)<- c("gene","cell")
+  list_out$initial_dim <- dimdata
+  
+  # `metadata`: dataframe of metadata
+  list_out$metadata <- metadata
+  
+  
+  # output
+  return(list_out)
+  
+  
+}
+
+qc_scs = function(scs, min_cells=0, min_features=0, mt_genes=NULL, max_mt=100){
+  
+# get genes less than min_cells 
+#   * `min_cells`: remove genes that were detected in less than `min_cells` cells; default value = 0
+# rowSums(obj[['counts']] != 0 counts non-zero elements of the row, counting cells that contain that gene. 
+
+to_rm_genes <- names(which(rowSums(scs[['counts']] != 0 ) < min_cells))
+
+# get cell IDs with less than 'min_features' detected genes
+# * `min_features`: remove cells that contain less than `min_features` detected genes; default value = 0
+# colSums(obj[['counts']] != 0 counts non-zero elements of the col, counting number of non-zero count genes in the cell that. 
+
+to_rm_cells <- names(which(colSums(scs[['counts']] != 0 ) < min_features))
+
+
+# if mt_gene is provided calculate percentage of mt gene and get cell IDs above max_mt 
+if (!is.null(mt_genes)){
+  tmpscs = percentage_features(scs, mt,"percent_mt") 
+  
+  to_rm_cells_mt <- rownames(tmpscs$metadata)[which(tmpscs$metadata > max_mt )]
+  
+} else {
+  
+  tmpscs <- scs 
+}
+
+
+# remove genes and cells 
+
+tmpscs = rm_cells(tmpscs, to_rm_cells) 
+tmpscs = rm_genes(tmpscs, to_rm_genes)
+tmpscs = rm_cells(tmpscs, to_rm_cells_mt)   
+
+return(tmpscs)
+  
+  
+}
+
+
+percentage_features = function(scs, features, name){
+  
+  # get the count matrix 
+  ctmat <- scs$counts 
+
+  # get genes containing features expression 
+  
+  ftarr <- character()
+  for (i in 1:length(features)){
+    ft = grep(features[i], rownames(ctmat), value = TRUE)
+    ftarr <- append(ftarr, ft)
+  }
+
+  # feature counts / total counts to get percentage 
+  ftsum <- colSums(ctmat[ftarr,])
+  totsum <- colSums(ctmat)
+
+  perc <- ftsum/totsum 
+  perc <- perc*100
+  
+  # If no metadata create metadata 
+  if (is.null(scs$metadata)){
+    scs$metadata <- data.frame(matrix(nrow=length(perc), ncol=0))
+    rownames(scs$metadata) <- names(perc)
+  } 
+  
+  # Add "name" column to metatdata and add calc'd percentage
+  scs$metadata[name] <- data.frame(perc ) 
+  
+  return(scs)
+
+}
+
+rm_cells = function(scs,to_rm){
+  
+  rm_out <- list()
+  
+  rm_out$initial_dim <- scs$initial_dim
+  rm_out$metadata <- scs$metadata 
+  
+  
+  # remove cells with IDs in to_rm
+  rm_out$counts <- scs$counts[,setdiff(colnames(scs$counts),to_rm)]
+  
+  # remove from metadata 
+  if (!is.null(scs$metadata)){
+  rm_out$metadata <- scs$metadata[setdiff(rownames(scs$metadata),to_rm),,drop=FALSE]
+  
+  }
+  
+  return(rm_out)
+  
+}
+
+rm_genes = function(scs,to_rm){
+  
+  rm_out <- list()
+  
+  rm_out$initial_dim <- scs$initial_dim
+  rm_out$metadata <- scs$metadata 
+  
+  # remove genes in to_rm
+  rm_out$counts <- scs$counts[setdiff(rownames(scs$counts),to_rm),]
+
+  return(rm_out)
+  
+}
+
+
+
+
+larva = read_scs('E:\\BOX\\Box\\DataScienceResource\\Upload to GIthub\\R\\GSM2818521_larva_counts_matrix.txt.gz')
+obj = create_scs(larva)
+mt = grep("^MT-", rownames(larva), value = TRUE)
+obj = qc_scs(scs = obj,
+             min_cells = 30, 
+             min_features = 300,
+             mt_genes = mt,
+             max_mt = 6)
+```
+
+# Normalize
+
+```{r}
+
+
+
+normalize_scs = function(scs, scale_factor=10000){
+  
+  cts <- scs$counts 
+  
+  # add all gene counts per cell 
+  totcts <- colSums(cts)
+  
+  # normalize 
+  normcounts <- t(t(cts)/totcts*scale_factor)
+  normcounts <- log(normcounts +1 )
+  
+  # insert results into 'normalized' 
+  scs$normalized <- normcounts
+  
+  return(scs)
+  
+}
+
+obj = normalize_scs(scs = obj, scale_factor = 10000)
+str(obj)
+```
+
+
+
+# print variables in obj's metadata 
+
+```{r}
+
+get_vars_scs = function(scs) {
+  
+  var_names <- names(scs$metadata)
+  
+  return(var_names)
+
+}
+
+
+get_vars_scs(scs = obj)
+```
+
+
+# Run multiple linear regression on each gene’s normalized expression measurements on a variables (vars_to_regress) and then saves the residuals.
+
+```{r}
+variation_adjust_scs = function(scs,vars_to_regress=NULL){
+  tmp <- scs 
+  ctnorm <- tmp$normalized
+  mtpc <- tmp$metadata[vars_to_regress]
+  mtpc <- unlist(mtpc)
+
+  
+  
+    
+    for (i in 1:dim(ctnorm)[1]){
+    
+    if (is.null(vars_to_regress)){ 
+    # lm for intercept only for each gene 
+    ct.lm <- lm(ctnorm[i,]~1)
+    } else {
+    # lm for each gene 
+    ct.lm <- lm(ctnorm[i,] ~ mtpc)
+    }
+    # calc residual and replace 
+    ct.res <- resid(ct.lm)
+    ctnorm[i,] <- ct.res  
+        
+    if(i %% 1000 == 0 ){
+      print(i)
+    }
+    }
+  tmp$corrected <- ctnorm
+  return(tmp)  
+  }
+  
+
+  
+obj = variation_adjust_scs(scs=obj,vars_to_regress = "percent_mt")
+
+str(obj)
+```
+
+# Identify the most variable genes using num of features are input. 
+
+
+```{r}
+library(matrixStats)
+variable_feat_scs = function(scs, nfeatures = 2000){
+  
+  tmp <- scs$corrected
+  tmpvar <- rowVars(tmp)
+  tmpdf <- matrix(tmpvar)
+  row.names(tmpdf) <- row.names(tmp)
+  maxvargene <- tmpdf[order(tmpdf,decreasing = TRUE),,drop=FALSE]
+  maxvar_names <- row.names(maxvargene[1:nfeatures,,drop=FALSE])
+  return(maxvar_names)
+  # return(maxvargene)
+}
+```
+
+```{r}
+var_feat = variable_feat_scs(scs = obj, nfeatures = 1000)
+head(var_feat)
+```
+
+# Perform PCA. 
+
+```{r}
+run_pca = function(scs, features, npcs){
+  
+  # get genes in features from normalized count and run pca 
+  nvar <- features
+  cts.pca  <- prcomp(t(scs$normalized[nvar,]), center = TRUE, scale = TRUE, rank=npcs)
+  
+  # get first npcs 
+  scs$PCA <- cts.pca$x
+  
+  return(scs)
+}
+
+obj = run_pca(obj,var_feat,10)
+str(obj)
+
+
+```
+
+# Get shared nearest neighor network using dbscan library using k = 20, number of nearest neighbors and kt =3, threshold for connection. 
+
+```{r}
+
+library("dbscan")
+
+make_snn = function(scs, k, kt){
+  
+  dt <- scs$PCA
+  nn <- sNN(dt, k=k, kt=kt)
+
+  scs$snn <- nn 
+  return(scs)
+}
+
+
+obj = make_snn(obj, k=20, kt=3)
+
+str(obj)
+```
+ 
+# Identify clusters using cluster_louvain in igraph library. 
+
+```{r}
+library("igraph")
+
+
+find_clusters = function(scs){
+  tmp <- scs$snn 
+  adj <- adjacencylist(tmp)
+  g <- graph_from_adj_list(adj, mode = "all", duplicate = FALSE)
+  clstr <- cluster_louvain(g)
+  
+  scs$metadata$cluster <- as.factor(membership(clstr))
+  return(scs)
+}
+
+obj = find_clusters(obj)
+head(obj$metadata)
+```
+
+# Run UMAP using previous results PCA + Clustering 
+
+
+```{r}
+
+
+library('umap')
+run_umap = function(scs){
+  
+  res = umap(scs$PCA)
+  scs$UMAP = res$layout
+  return(scs)
+  
+}
+
+obj = run_umap(obj)
+str(obj)
+
+```
+
+# Visualize UMAP 
+
+```{r}
+library(ggplot2)
+viz_scs = function(scs, feature){
+  tmp <- scs[[feature]]
+  tmp <- as.data.frame(tmp)
+
+
+ggplot(
+  tmp, 
+  aes(x=V1,
+      y=V2,
+      color = scs$metadata$cluster )
+) +
+  geom_point() + 
+  xlab('UMAP1') + ylab('UMAP2')
+  
+}
+
+viz_scs(obj,'UMAP')
+```
+```{r}
+# set.seed(2)
+# obj = run_umap(obj)
+# viz_scs(obj,'UMAP')
+```
+
